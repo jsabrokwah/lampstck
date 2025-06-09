@@ -85,7 +85,7 @@
 - **Application Load Balancer**:
   - Deployed in public subnets
   - HTTP to HTTPS redirection
-  - Advanced routing based on paths (/api/~)
+  - Advanced routing based on paths (/api/)
   - Sticky sessions for authenticated users
   - Connection draining during deployments
 
