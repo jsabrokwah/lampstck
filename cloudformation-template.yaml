@@ -400,7 +400,7 @@ Resources:
             
             # Install the todo application
             cd /var/www/html
-            git clone https://github.com/yourusername/todo-app.git .
+            git clone https://github.com/jsabrokwah/lampstck.git .
             
             # Configure database connection
             sed -i "s/localhost/${AuroraDBCluster.Endpoint.Address}/g" /var/www/html/api/config.php
