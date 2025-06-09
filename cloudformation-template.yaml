@@ -317,7 +317,7 @@ Resources:
     Type: AWS::RDS::DBCluster
     Properties:
       Engine: aurora-mysql
-      EngineVersion: 8.0.mysql_aurora.2.11.1
+      EngineVersion: 8.0.mysql_aurora.3.09.0
       DatabaseName: !Ref DBName
       MasterUsername: !Ref DBUsername
       MasterUserPassword: !Ref DBPassword
