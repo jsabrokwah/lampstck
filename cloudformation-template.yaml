@@ -1,4 +1,4 @@
-AWSTemplateFormatVersion: '2010-09-09'
+AWSTemplateFormatVersion: 2010-09-09
 Description: 'CloudFormation template for LAMP stack Todo Application with high availability'
 
 Parameters:
@@ -320,7 +320,7 @@ Resources:
       DBSubnetGroupName: !Ref DBSubnetGroup
       VpcSecurityGroupIds:
         - !Ref DBSecurityGroup
-      BackupRetentionPeriod: 35
+      BackupRetentionPeriod: 7
       StorageEncrypted: true
 
   AuroraPrimaryInstance:
@@ -385,7 +385,7 @@ Resources:
       LaunchTemplateName: !Sub ${EnvironmentName}-WebServerLaunchTemplate
       VersionDescription: Initial version
       LaunchTemplateData:
-        ImageId: ami-0c55b159cbfafe1f0  # Amazon Linux 2 AMI (adjust for your region)
+        ImageId: ami-0694d931cee176e7d  # Amazon Linux 2 AMI for eu-west-1
         InstanceType: !Ref InstanceType
         KeyName: !Ref KeyName
         SecurityGroupIds:
@@ -400,16 +400,78 @@ Resources:
             
             # Install the todo application
             cd /var/www/html
-            git clone https://github.com/jsabrokwah/lampstck.git .
             
-            # Configure database connection
-            sed -i "s/localhost/${AuroraDBCluster.Endpoint.Address}/g" /var/www/html/api/config.php
-            sed -i "s/todo_user/${DBUsername}/g" /var/www/html/api/config.php
-            sed -i "s/todo_password/${DBPassword}/g" /var/www/html/api/config.php
+            # Copy the application files
+            git clone https://github.com/jsabrokwah/lampstck.git .
+            if [ $? -ne 0 ]; then
+                echo "Failed to clone repository, copying local files"
+                # Create application directories
+                mkdir -p /var/www/html/api
+                mkdir -p /var/www/html/css
+                mkdir -p /var/www/html/js
+                
+                # Create index.php and other necessary files
+                echo "<?php include_once('api/get_todos.php'); ?>" > /var/www/html/index.php
+            fi
+            
+            # Create config.php with correct database settings
+            cat > /var/www/html/api/config.php << EOF
+            <?php
+            // Database configuration
+            \$db_host = '${AuroraDBCluster.Endpoint.Address}'; 
+            \$db_name = '${DBName}';
+            \$db_user = '${DBUsername}';
+            \$db_pass = '${DBPassword}';
+
+            // Create database connection
+            try {
+                \$conn = new PDO("mysql:host=\$db_host;dbname=\$db_name", \$db_user, \$db_pass);
+                \$conn->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+            } catch(PDOException \$e) {
+                echo json_encode(['error' => 'Connection failed: ' . \$e->getMessage()]);
+                exit;
+            }
+            ?>
+            EOF
             
             # Set permissions
             chown -R apache:apache /var/www/html/
             chmod -R 755 /var/www/html/
+            
+            # Initialize database schema
+            cat > /tmp/init.sql << EOF
+            -- Create todos table
+            CREATE TABLE IF NOT EXISTS todos (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                task VARCHAR(255) NOT NULL,
+                completed BOOLEAN DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            -- Insert some sample data
+            INSERT INTO todos (task, completed) VALUES 
+            ('Complete AWS infrastructure setup', 0),
+            ('Deploy LAMP stack application', 0),
+            ('Test high availability', 0),
+            ('Configure CloudWatch monitoring', 0);
+            EOF
+
+            # Wait for database to be available
+            COUNTER=0
+            MAX_TRIES=30
+            until mysql -h ${AuroraDBCluster.Endpoint.Address} -u ${DBUsername} -p${DBPassword} -e "SELECT 1" ${DBName} 2>/dev/null
+            do
+              if [ $COUNTER -eq $MAX_TRIES ]; then
+                echo "Failed to connect to database after $MAX_TRIES attempts"
+                break
+              fi
+              echo "Waiting for database connection..."
+              sleep 10
+              COUNTER=$((COUNTER+1))
+            done
+            
+            # Import schema
+            mysql -h ${AuroraDBCluster.Endpoint.Address} -u ${DBUsername} -p${DBPassword} ${DBName} < /tmp/init.sql
 
   # Auto Scaling Group
   WebServerAutoScalingGroup:
@@ -489,7 +551,7 @@ Resources:
   BackupBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub ${EnvironmentName}-backups-${AWS::AccountId}
+      # Using a generated name to avoid naming conflicts
       VersioningConfiguration:
         Status: Enabled
       LifecycleConfiguration:
