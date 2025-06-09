@@ -284,6 +284,10 @@ Resources:
           ToPort: 80
           SourceSecurityGroupId: !Ref ALBSecurityGroup
         - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0  # For SSM HTTPS connections
+        - IpProtocol: tcp
           FromPort: 22
           ToPort: 22
           CidrIp: 0.0.0.0/0  # In production, restrict to specific IP ranges
@@ -313,7 +317,7 @@ Resources:
     Type: AWS::RDS::DBCluster
     Properties:
       Engine: aurora-mysql
-      EngineVersion: 5.7.mysql_aurora.2.11.1
+      EngineVersion: 8.0.mysql_aurora.2.11.1
       DatabaseName: !Ref DBName
       MasterUsername: !Ref DBUsername
       MasterUserPassword: !Ref DBPassword
@@ -379,40 +383,122 @@ Resources:
       Protocol: HTTP
 
   # Launch Template for EC2 instances
+  # IAM Role for EC2 instances with SSM and CloudWatch access
+  WebServerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+      Path: /
+
+  WebServerInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref WebServerRole
+
   WebServerLaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
     Properties:
       LaunchTemplateName: !Sub ${EnvironmentName}-WebServerLaunchTemplate
       VersionDescription: Initial version
       LaunchTemplateData:
-        ImageId: ami-0694d931cee176e7d  # Amazon Linux 2 AMI for eu-west-1
+        ImageId: ami-03400c3b73b5086e9  # Amazon Linux 2023 AMI for eu-west-1
         InstanceType: !Ref InstanceType
         KeyName: !Ref KeyName
         SecurityGroupIds:
           - !Ref WebServerSecurityGroup
+        IamInstanceProfile:
+          Name: !Ref WebServerInstanceProfile
         UserData:
           Fn::Base64: !Sub |
             #!/bin/bash -xe
-            yum update -y
-            yum install -y httpd php php-mysqlnd mysql git
-            systemctl start httpd
-            systemctl enable httpd
+            sudo yum update -y
+            sudo dnf -y localinstall https://dev.mysql.com/get/mysql80-community-release-el9-4.noarch.rpm
+            sudo dnf -y install mysql mysql-community-client
+            sudo yum install -y httpd php php-mysqlnd git amazon-cloudwatch-agent
+            sudo systemctl start httpd
+            sudo systemctl enable httpd
+            
+            # Install and configure SSM agent
+            sudo yum install -y amazon-ssm-agent
+            sudo systemctl enable amazon-ssm-agent
+            sudo systemctl start amazon-ssm-agent
+            
+            # Configure CloudWatch agent
+            sudo su
+            cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json << 'EOF'
+            {
+              "agent": {
+                "metrics_collection_interval": 60,
+                "run_as_user": "root"
+              },
+              "metrics": {
+                "metrics_collected": {
+                  "disk": {
+                    "measurement": [
+                      "used_percent"
+                    ],
+                    "metrics_collection_interval": 60,
+                    "resources": [
+                      "/"
+                    ]
+                  },
+                  "mem": {
+                    "measurement": [
+                      "mem_used_percent"
+                    ],
+                    "metrics_collection_interval": 60
+                  },
+                  "swap": {
+                    "measurement": [
+                      "swap_used_percent"
+                    ],
+                    "metrics_collection_interval": 60
+                  }
+                }
+              },
+              "logs": {
+                "logs_collected": {
+                  "files": {
+                    "collect_list": [
+                      {
+                        "file_path": "/var/log/httpd/access_log",
+                        "log_group_name": "/aws/ec2/httpd/access_log",
+                        "log_stream_name": "{instance_id}",
+                        "retention_in_days": 7
+                      },
+                      {
+                        "file_path": "/var/log/httpd/error_log",
+                        "log_group_name": "/aws/ec2/httpd/error_log",
+                        "log_stream_name": "{instance_id}",
+                        "retention_in_days": 7
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+            EOF
+            exit
+            # Start CloudWatch agent
+            sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
             
             # Install the todo application
             cd /var/www/html
             
             # Copy the application files
-            git clone https://github.com/jsabrokwah/lampstck.git .
-            if [ $? -ne 0 ]; then
-                echo "Failed to clone repository, copying local files"
-                # Create application directories
-                mkdir -p /var/www/html/api
-                mkdir -p /var/www/html/css
-                mkdir -p /var/www/html/js
-                
-                # Create index.php and other necessary files
-                echo "<?php include_once('api/get_todos.php'); ?>" > /var/www/html/index.php
-            fi
+            sudo git clone https://github.com/jsabrokwah/lampstck.git .
+            sudo su
             
             # Create config.php with correct database settings
             cat > /var/www/html/api/config.php << EOF
@@ -472,6 +558,7 @@ Resources:
             
             # Import schema
             mysql -h ${AuroraDBCluster.Endpoint.Address} -u ${DBUsername} -p${DBPassword} ${DBName} < /tmp/init.sql
+            exit
 
   # Auto Scaling Group
   WebServerAutoScalingGroup:
@@ -559,6 +646,48 @@ Resources:
           - Id: DeleteOldBackups
             Status: Enabled
             ExpirationInDays: 90
+            
+  # CloudWatch Dashboard
+  WebAppDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub ${EnvironmentName}-Dashboard
+      DashboardBody: 
+        !Sub 
+        '{"widgets":[{"type":"metric","x":0,"y":0,"width":12,"height":6,"properties":{"metrics":[["AWS/EC2","CPUUtilization","AutoScalingGroupName","${WebServerAutoScalingGroup}"]],"period":300,"stat":"Average","region":"${AWS::Region}","title":"EC2 CPU Utilization"}},{"type":"metric","x":12,"y":0,"width":12,"height":6,"properties":{"metrics":[["CWAgent","mem_used_percent","AutoScalingGroupName","${WebServerAutoScalingGroup}"]],"period":300,"stat":"Average","region":"${AWS::Region}","title":"Memory Utilization"}},{"type":"metric","x":0,"y":6,"width":12,"height":6,"properties":{"metrics":[["CWAgent","disk_used_percent","AutoScalingGroupName","${WebServerAutoScalingGroup}","device","xvda1","fstype","xfs","path","/"]],"period":300,"stat":"Average","region":"${AWS::Region}","title":"Disk Utilization"}},{"type":"metric","x":12,"y":6,"width":12,"height":6,"properties":{"metrics":[["AWS/ApplicationELB","RequestCount","LoadBalancer","${ApplicationLoadBalancer.LoadBalancerFullName}"]],"period":300,"stat":"Sum","region":"${AWS::Region}","title":"ALB Request Count"}}]}'
+        
+  # Additional CloudWatch Alarms
+  DiskSpaceAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Alarm if disk usage exceeds 80%
+      MetricName: disk_used_percent
+      Namespace: CWAgent
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref WebServerAutoScalingGroup
+        - Name: path
+          Value: /
+          
+  MemoryAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Alarm if memory usage exceeds 80%
+      MetricName: mem_used_percent
+      Namespace: CWAgent
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref WebServerAutoScalingGroup
 
 Outputs:
   VPC:
