@@ -438,7 +438,7 @@ Resources:
   CPUHighAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmDescription: Scale up if CPU > 70% for 5 minutes
+      AlarmDescription: Scale up if CPU > 80% for 5 minutes
       MetricName: CPUUtilization
       Namespace: AWS/EC2
       Statistic: Average
