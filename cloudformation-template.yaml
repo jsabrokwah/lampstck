@@ -317,7 +317,7 @@ Resources:
     Type: AWS::RDS::DBCluster
     Properties:
       Engine: aurora-mysql
-      EngineVersion: 8.0.mysql_aurora.3.09.0
+      EngineVersion: 5.7.mysql_aurora.2.11.1
       DatabaseName: !Ref DBName
       MasterUsername: !Ref DBUsername
       MasterUserPassword: !Ref DBPassword
@@ -498,10 +498,17 @@ Resources:
             
             # Copy the application files
             sudo git clone https://github.com/jsabrokwah/lampstck.git .
-            sudo su
+            # if [ $? -ne 0 ]; then
+                
+            #     # Create index.php and other necessary files
+            #     sudo su
+            #     echo "<?php include_once('todoApp/index.php'); ?>" > /var/www/html/index.php
+            #     chmod 777 /var/www/html/index.php
+            #     exit
+            # fi
             
             # Create config.php with correct database settings
-            cat > /var/www/html/api/config.php << EOF
+            sudo cat > /var/www/html/api/config.php << EOF
             <?php
             // Database configuration
             \$db_host = '${AuroraDBCluster.Endpoint.Address}'; 
@@ -521,11 +528,11 @@ Resources:
             EOF
             
             # Set permissions
-            chown -R apache:apache /var/www/html/
-            chmod -R 755 /var/www/html/
+            sudo chown -R apache:apache /var/www/html/
+            sudo chmod -R 755 /var/www/html/
             
             # Initialize database schema
-            cat > /tmp/init.sql << EOF
+            sudo cat > /tmp/init.sql << EOF
             -- Create todos table
             CREATE TABLE IF NOT EXISTS todos (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -542,6 +549,7 @@ Resources:
             ('Configure CloudWatch monitoring', 0);
             EOF
 
+            sudo su
             # Wait for database to be available
             COUNTER=0
             MAX_TRIES=30
@@ -559,6 +567,9 @@ Resources:
             # Import schema
             mysql -h ${AuroraDBCluster.Endpoint.Address} -u ${DBUsername} -p${DBPassword} ${DBName} < /tmp/init.sql
             exit
+            # Restart Apache
+            sudo systemctl restart httpd
+            sudo systemctl restart amazon-ssm-agent
 
   # Auto Scaling Group
   WebServerAutoScalingGroup:
