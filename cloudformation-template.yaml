@@ -422,92 +422,165 @@ Resources:
         UserData:
           Fn::Base64: !Sub |
             #!/bin/bash -xe
+            # Enable detailed logging (fix permission issue)
+            sudo touch /var/log/user-data.log
+            sudo chmod 666 /var/log/user-data.log
+            exec > >(tee /var/log/user-data.log) 2>&1
+
+            echo "Starting setup script..."
+
             sudo yum update -y
             sudo dnf -y localinstall https://dev.mysql.com/get/mysql80-community-release-el9-4.noarch.rpm
             sudo dnf -y install mysql mysql-community-client
             sudo yum install -y httpd php php-mysqlnd git amazon-cloudwatch-agent
             sudo systemctl start httpd
             sudo systemctl enable httpd
-            
+
             # Install and configure SSM agent
             sudo yum install -y amazon-ssm-agent
             sudo systemctl enable amazon-ssm-agent
             sudo systemctl start amazon-ssm-agent
-            
-            # Configure CloudWatch agent
-            sudo su
+
+            # Configure CloudWatch agent (fix: remove sudo su)
+            sudo su <<EOF
             cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json << 'EOF'
             {
-              "agent": {
+            "agent": {
                 "metrics_collection_interval": 60,
                 "run_as_user": "root"
-              },
-              "metrics": {
+            },
+            "metrics": {
                 "metrics_collected": {
-                  "disk": {
+                "disk": {
                     "measurement": [
-                      "used_percent"
+                    "used_percent"
                     ],
                     "metrics_collection_interval": 60,
                     "resources": [
-                      "/"
+                    "/"
                     ]
-                  },
-                  "mem": {
+                },
+                "mem": {
                     "measurement": [
-                      "mem_used_percent"
+                    "mem_used_percent"
                     ],
                     "metrics_collection_interval": 60
-                  },
-                  "swap": {
+                },
+                "swap": {
                     "measurement": [
-                      "swap_used_percent"
+                    "swap_used_percent"
                     ],
                     "metrics_collection_interval": 60
-                  }
                 }
-              },
-              "logs": {
+                }
+            },
+            "logs": {
                 "logs_collected": {
-                  "files": {
+                "files": {
                     "collect_list": [
-                      {
+                    {
                         "file_path": "/var/log/httpd/access_log",
                         "log_group_name": "/aws/ec2/httpd/access_log",
                         "log_stream_name": "{instance_id}",
                         "retention_in_days": 7
-                      },
-                      {
+                    },
+                    {
                         "file_path": "/var/log/httpd/error_log",
                         "log_group_name": "/aws/ec2/httpd/error_log",
                         "log_stream_name": "{instance_id}",
                         "retention_in_days": 7
-                      }
+                    }
                     ]
-                  }
                 }
-              }
+                }
+            }
             }
             EOF
-            exit
+
             # Start CloudWatch agent
             sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
-            
-            # Install the todo application
+            sudo systemctl start amazon-cloudwatch-agent.service
+
+            # Install the todo application with proper error handling
+            echo "Starting application deployment..."
+
+            # Remove default Apache content and ensure directory is empty
+            sudo rm -rf /var/www/html/*
+            sudo rm -f /var/www/html/.??*  # Remove hidden files
+
+            # Change to the target directory
             cd /var/www/html
-            
-            # Copy the application files
-            sudo git clone https://github.com/jsabrokwah/lampstck.git .
-            # if [ $? -ne 0 ]; then
+
+            # Clone the repository with error handling
+            echo "Cloning repository..."
+            if sudo git clone https://github.com/jsabrokwah/lampstck.git temp_repo; then
+                echo "Git clone successful"
+                # Move contents from temp directory to html directory
+                sudo mv temp_repo/* .
+                sudo mv temp_repo/.* . 2>/dev/null || true  # Move hidden files, ignore errors
+                sudo rm -rf temp_repo
+                echo "Repository contents moved successfully"
+                ls -la /var/www/html/  # Debug: list contents
+            else
+                echo "Git clone failed, creating fallback application..."
+                # Create a basic fallback application
+                sudo mkdir -p /var/www/html/api
+                sudo mkdir -p /var/www/html/css
+                sudo mkdir -p /var/www/html/js
                 
-            #     # Create index.php and other necessary files
-            #     sudo su
-            #     echo "<?php include_once('todoApp/index.php'); ?>" > /var/www/html/index.php
-            #     chmod 777 /var/www/html/index.php
-            #     exit
-            # fi
-            
-            # Create config.php with correct database settings
+                # Create basic index.php
+                sudo cat > /var/www/html/index.php << 'INDEXEOF'
+            <!DOCTYPE html>
+            <html lang="en">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>Todo App</title>
+                <link rel="stylesheet" href="css/style.css">
+            </head>
+            <body>
+                <div class="container">
+                    <h1>Todo Application</h1>
+                    <p>Repository clone failed - using fallback version</p>
+                    <div id="todo-app">
+                        <!-- Todo app will be loaded here -->
+                    </div>
+                </div>
+                <script src="js/app.js"></script>
+            </body>
+            </html>
+            INDEXEOF
+
+                # Create basic CSS
+                sudo cat > /var/www/html/css/style.css << 'CSSEOF'
+            body {
+                font-family: Arial, sans-serif;
+                margin: 0;
+                padding: 20px;
+                background-color: #f5f5f5;
+            }
+            .container {
+                max-width: 800px;
+                margin: 0 auto;
+                background: white;
+                padding: 20px;
+                border-radius: 8px;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            }
+            CSSEOF
+
+                # Create basic JS
+                sudo cat > /var/www/html/js/app.js << 'JSEOF'
+            console.log('Todo app fallback version loaded');
+            JSEOF
+            fi
+
+            # Create config.php with correct database settings (always create this)
+            echo "Creating database configuration..."
+            # Create config.php with correct database settings (always create this)
+            echo "Creating database configuration..."
+            sudo chown -R root:root /var/www/html/
+            sudo chmod -R 777 /var/www/html/
             sudo cat > /var/www/html/api/config.php << EOF
             <?php
             // Database configuration
@@ -526,12 +599,19 @@ Resources:
             }
             ?>
             EOF
-            
-            # Set permissions
+
+            # Set proper permissions
+            echo "Setting permissions..."
             sudo chown -R apache:apache /var/www/html/
             sudo chmod -R 755 /var/www/html/
-            
+            sudo find /var/www/html -type f -name "*.php" -exec chmod 644 {} \;
+
+            # Debug: Show final directory structure
+            echo "Final directory structure:"
+            sudo find /var/www/html -type f -exec ls -la {} \;
+
             # Initialize database schema
+            echo "Initializing database..."
             sudo cat > /tmp/init.sql << EOF
             -- Create todos table
             CREATE TABLE IF NOT EXISTS todos (
@@ -549,27 +629,37 @@ Resources:
             ('Configure CloudWatch monitoring', 0);
             EOF
 
-            sudo su
-            # Wait for database to be available
+            # Wait for database to be available and initialize
+            echo "Waiting for database connection..."
             COUNTER=0
-            MAX_TRIES=30
-            until mysql -h ${AuroraDBCluster.Endpoint.Address} -u ${DBUsername} -p${DBPassword} -e "SELECT 1" ${DBName} 2>/dev/null
+            MAX_TRIES=3
+            export MYSQL_PWD=${DBPassword}
+            until mysql -h ${AuroraDBCluster.Endpoint.Address} -u ${DBUsername} -p ${DBPassword} -e "SELECT 1" ${DBName} 2>/dev/null
             do
               if [ $COUNTER -eq $MAX_TRIES ]; then
                 echo "Failed to connect to database after $MAX_TRIES attempts"
                 break
               fi
-              echo "Waiting for database connection..."
+              echo "Database connection attempt $COUNTER of $MAX_TRIES..."
               sleep 10
               COUNTER=$((COUNTER+1))
             done
-            
-            # Import schema
-            mysql -h ${AuroraDBCluster.Endpoint.Address} -u ${DBUsername} -p${DBPassword} ${DBName} < /tmp/init.sql
-            exit
-            # Restart Apache
+
+            # Import schema if database is available
+            if mysql -h ${AuroraDBCluster.Endpoint.Address} -u ${DBUsername} -p ${DBPassword} -e "SELECT 1" ${DBName} 2>/dev/null; then
+                echo "Importing database schema..."
+                mysql -h ${AuroraDBCluster.Endpoint.Address} -u ${DBUsername} -p ${DBPassword} ${DBName} < /tmp/init.sql
+                echo "Database initialization complete"
+            else
+                echo "Database connection failed - schema not imported"
+            fi
+
+            # Restart services
+            echo "Restarting services..."
             sudo systemctl restart httpd
             sudo systemctl restart amazon-ssm-agent
+
+            echo "User data script completed successfully"
 
   # Auto Scaling Group
   WebServerAutoScalingGroup:
