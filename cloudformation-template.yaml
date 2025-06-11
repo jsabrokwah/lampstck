@@ -361,11 +361,11 @@ Resources:
   ALBTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
-      HealthCheckIntervalSeconds: 30
+      HealthCheckIntervalSeconds: 180
       HealthCheckPath: /
       HealthCheckProtocol: HTTP
-      HealthCheckTimeoutSeconds: 5
-      HealthyThresholdCount: 2
+      HealthCheckTimeoutSeconds: 30
+      HealthyThresholdCount: 3
       Port: 80
       Protocol: HTTP
       UnhealthyThresholdCount: 5
@@ -633,7 +633,7 @@ Resources:
             echo "Waiting for database connection..."
             COUNTER=0
             MAX_TRIES=3
-            export MYSQL_PWD=${DBPassword}
+            export MYSQL_PWD="${DBPassword}"
             until mysql -h ${AuroraDBCluster.Endpoint.Address} -u ${DBUsername} -p ${DBPassword} -e "SELECT 1" ${DBName} 2>/dev/null
             do
               if [ $COUNTER -eq $MAX_TRIES ]; then

@@ -1,12 +1,10 @@
-# Infrastructure Architecture Plan for LAMP stack Todo Application with high availability, security and adhere to Well Architected Framework
+# Infrastructure Architecture Plan for LAMP Stack Todo Application
+
+This document details the infrastructure architecture for a highly available, secure LAMP stack Todo application that adheres to AWS Well-Architected Framework principles.
 
 ## Architecture Overview
 
 ```
-                                   ┌──────────-──────────┐
-                                   │   CloudFront CDN    │
-                                   └──────────┬──────────┘
-                                              │
 ┌─────────────────────────────────────────────────────────────────────────────────────────-┐
 │                                      AWS VPC                                             │
 │                                                                                          │
@@ -50,72 +48,84 @@
               └─────────────────┘                      └─────────────────┘
 ```
 
-## Architecture for Todo Application with High Traffic and Security Focus
+## Well-Architected Framework Implementation
+
+This architecture addresses the five pillars of the AWS Well-Architected Framework:
+
+1. **Operational Excellence**: Automated deployment via CloudFormation, comprehensive monitoring, and operational procedures
+2. **Security**: Defense in depth with network segmentation, least privilege access, and encryption
+3. **Reliability**: Multi-AZ deployment, auto-scaling, and automated failover
+4. **Performance Efficiency**: Right-sized resources with ability to scale based on demand
+5. **Cost Optimization**: Pay-for-use model with auto-scaling to match resource consumption with demand
+
+## Architecture Components and Design Decisions
 
 ### 1. VPC and Network Design
-- **Multi-AZ VPC**: Spanning two Availability Zones (AZ-A and AZ-B) for high availability
+- **Multi-AZ VPC**: Spans two Availability Zones (AZ-A and AZ-B) for high availability and fault tolerance
 - **Subnet Tiers**:
-  - **Public Subnets**: Only for Application Load Balancer and NAT Gateways
-  - **Private Subnets**: For LAMP stack EC2 instances
-  - **Isolated Subnets**: For database instances with no internet access
+  - **Public Subnets**: Host only the Application Load Balancer and NAT Gateways
+  - **Private Subnets**: Contain LAMP stack EC2 instances with no direct internet access
+  - **Isolated Subnets**: House database instances with no outbound internet access
 - **Network Security**:
-  - **Network ACLs (NACLs)**:
-    - Public subnet NACLs: Allow HTTP/HTTPS inbound, restrict outbound to necessary ports
-    - Private subnet NACLs: Allow traffic from ALB and outbound to NAT Gateway
-    - Isolated subnet NACLs: Allow only database traffic from private subnets
-  - Security Groups for instance-level security
-  - VPC Flow Logs for network traffic monitoring
-- **NAT Gateways**:
-  - Deployed in each public subnet (AZ-A and AZ-B)
-  - Enables EC2 instances in private subnets to access the internet for updates and patches
-  - Provides high availability with one NAT Gateway per AZ
+  - **Network ACLs**: Provide subnet-level security with stateless filtering
+  - **Security Groups**: Offer instance-level security with stateful filtering
+  - **VPC Flow Logs**: Enable network traffic monitoring and troubleshooting
+- **NAT Gateways**: Allow EC2 instances in private subnets to access the internet for updates while maintaining security
 
-### 2. Frontend and Content Delivery
-- **Amazon CloudFront**: 
-  - Edge caching for static assets (CSS, JS, images)
-  - Custom error responses for maintenance pages
-  - Origin Access Identity to prevent direct access to S3
-
-### 3. Security and Access Control
-- **AWS WAF**: Integrated with CloudFront and ALB
-  - Rate limiting to prevent brute force attacks
-  - SQL injection protection rules
-
-### 4. Load Balancing and Traffic Management
+### 2. Load Balancing and Traffic Management
 - **Application Load Balancer**:
-  - Deployed in public subnets
-  - HTTP to HTTPS redirection
-  - Advanced routing based on paths (/api/)
-  - Sticky sessions for authenticated users
-  - Connection draining during deployments
+  - Distributes traffic across multiple EC2 instances in different AZs
+  - Performs health checks to ensure traffic is only sent to healthy instances
+  - Supports connection draining during deployments for zero-downtime updates
+  - Integrates with AWS WAF for additional security
 
-### 5. Compute Layer (Optimized for Todo App)
-- **LAMP Stack Instances**:
-  - Apache and PHP on the same EC2 instances for reduced latency
-  - Deployed in private subnets for security
-  - Auto Scaling Groups in both AZ-A and AZ-B
-  - Predictive scaling based on time patterns (e.g., business hours)
-  - Manual deployment process for application updates
-- **EC2 Instance Type**: t2.micro
+### 3. Compute Layer
+- **Auto Scaling Groups**:
+  - Maintain application availability by ensuring minimum number of healthy instances
+  - Scale horizontally based on CPU utilization and request patterns
+  - Span multiple AZs for high availability
+  - Use Launch Templates for consistent instance configuration
+- **EC2 Instances**:
+  - Run Amazon Linux 2023 for improved security and performance
+  - Host Apache web server and PHP runtime environment
+  - Deployed in private subnets for enhanced security
+  - Configured with CloudWatch agent for detailed monitoring
 
-
-### 6. Database Layer
+### 4. Database Layer
 - **Amazon Aurora MySQL**:
-  - Deployed in isolated subnets
-  - Multi-AZ deployment with primary and replica instances
-  - Performance Insights enabled for query optimization
-  - Automated backups with 35-day retention
-  - Point-in-time recovery capability
+  - Provides high availability with automatic failover to replica instances
+  - Deployed across multiple AZs for disaster recovery
+  - Offers automated backups with 35-day retention period
+  - Enables point-in-time recovery for data protection
+  - Uses isolated subnets for maximum security
 
-### 7. Security and Access Management
-- **Security Controls**:
-  - Security groups for instance-level access control
-  - Network ACLs for subnet-level security
-  - IAM roles and policies for AWS service access
+### 5. Security Implementation
+- **Defense in Depth**:
+  - Network segmentation with public, private, and isolated subnets
+  - Security groups for fine-grained access control
+  - IAM roles for EC2 instances with least privilege permissions
   - Encryption for data at rest and in transit
+- **Application Security**:
+  - Input validation and sanitization in the application code
+  - Prepared statements to prevent SQL injection
+  - Secure coding practices throughout the application
 
-### 8. Monitoring and Operations
-- **CloudWatch**:
-  - Custom dashboard for todo application metrics
-  - Anomaly detection for unusual traffic patterns
-  - Synthetic canary testing for critical paths
+### 6. Monitoring and Operations
+- **CloudWatch Integration**:
+  - Custom dashboard for application and infrastructure metrics
+  - Alarms for critical thresholds (CPU, memory, disk usage)
+  - Log aggregation for troubleshooting and analysis
+  - Automated scaling triggers based on performance metrics
+
+### 7. Backup and Recovery
+- **Data Protection**:
+  - Automated database backups with 35-day retention
+  - S3 bucket for application backups and artifacts
+  - Multi-AZ deployment for infrastructure resilience
+  - Documented recovery procedures
+
+## Implementation Details
+
+This architecture is implemented using AWS CloudFormation for infrastructure as code, ensuring consistent, repeatable deployments. The CloudFormation template (`cloudformation-template.yaml`) provisions all required resources and configures them according to best practices.
+
+For detailed deployment instructions, refer to the `deployment-instructions.md` document.
