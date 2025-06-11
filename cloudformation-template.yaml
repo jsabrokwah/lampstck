@@ -295,7 +295,7 @@ Resources:
   DBSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Security group for Aurora MySQL
+      GroupDescription: Security group for MySQL EC2 Instance
       VpcId: !Ref VPC
       SecurityGroupIngress:
         - IpProtocol: tcp
@@ -303,47 +303,140 @@ Resources:
           ToPort: 3306
           SourceSecurityGroupId: !Ref WebServerSecurityGroup
 
-  # DB Subnet Group
-  DBSubnetGroup:
-    Type: AWS::RDS::DBSubnetGroup
-    Properties:
-      DBSubnetGroupDescription: Subnet group for Aurora MySQL
-      SubnetIds:
-        - !Ref DBSubnet1
-        - !Ref DBSubnet2
 
-  # Aurora MySQL Cluster
-  AuroraDBCluster:
-    Type: AWS::RDS::DBCluster
+  MySQLDBInstance:
+    Type: AWS::EC2::Instance
     Properties:
-      Engine: aurora-mysql
-      EngineVersion: 5.7.mysql_aurora.2.11.1
-      DatabaseName: !Ref DBName
-      MasterUsername: !Ref DBUsername
-      MasterUserPassword: !Ref DBPassword
-      DBSubnetGroupName: !Ref DBSubnetGroup
-      VpcSecurityGroupIds:
+      ImageId: ami-03400c3b73b5086e9  # Amazon Linux 2023 AMI for eu-west-1
+      InstanceType: t2.micro  # Adjust based on your database requirements
+      SubnetId: !Ref DBSubnet1  # Placing in eu-west-1a
+      SecurityGroupIds:
         - !Ref DBSecurityGroup
-      BackupRetentionPeriod: 7
-      StorageEncrypted: true
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref DBInstanceProfile
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 20  # Adjust based on your storage needs
+            VolumeType: gp3
+            DeleteOnTermination: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-MySQL-DB-Server
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          # Update system
+          sudo yum update -y
+          
+          # Install Docker
+          sudo dnf install -y docker
+          sudo systemctl start docker
+          sudo systemctl enable docker
 
-  AuroraPrimaryInstance:
-    Type: AWS::RDS::DBInstance
-    Properties:
-      Engine: aurora-mysql
-      DBClusterIdentifier: !Ref AuroraDBCluster
-      DBInstanceClass: db.t3.small
-      DBSubnetGroupName: !Ref DBSubnetGroup
-      PubliclyAccessible: false
+          # Install and configure SSM agent
+            sudo yum install -y amazon-ssm-agent
+            sudo systemctl enable amazon-ssm-agent
+            sudo systemctl start amazon-ssm-agent
+          
+          # Create directories for MySQL data and configuration
+          sudo mkdir -p /data/mysql
+          sudo mkdir -p /data/mysql/conf.d
+          
+          # Create MySQL configuration file
+          sudo cat > /data/mysql/my.cnf << 'EOF'
+          [mysqld]
+          character-set-server = utf8mb4
+          collation-server = utf8mb4_unicode_ci
+          default-authentication-plugin = mysql_native_password
+          max_connections = 20
+          innodb_buffer_pool_size = 256M
+          EOF
+          
+          # Run MySQL container
+          sudo docker run --name mysql-server \
+            -v /data/mysql:/var/lib/mysql \
+            -v /data/mysql/my.cnf:/etc/mysql/my.cnf \
+            -v /data/mysql/conf.d:/etc/mysql/conf.d \
+            -e MYSQL_ROOT_PASSWORD=${DBPassword} \
+            -e MYSQL_DATABASE=${DBName} \
+            -e MYSQL_USER=${DBUsername} \
+            -e MYSQL_PASSWORD=${DBPassword} \
+            -p 3306:3306 \
+            --restart always \
+            -d mysql:8.0
+            
+          # Install CloudWatch agent
+          sudo yum install -y amazon-cloudwatch-agent
+          
+          # Configure CloudWatch agent
+          sudo su <<EOF
+          sudo cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json << 'EOF'
+          {
+            "agent": {
+              "metrics_collection_interval": 60,
+              "run_as_user": "root"
+            },
+            "metrics": {
+              "metrics_collected": {
+                "disk": {
+                  "measurement": ["used_percent"],
+                  "metrics_collection_interval": 60,
+                  "resources": ["/"]
+                },
+                "mem": {
+                  "measurement": ["mem_used_percent"],
+                  "metrics_collection_interval": 60
+                },
+                "swap": {
+                  "measurement": ["swap_used_percent"],
+                  "metrics_collection_interval": 60
+                }
+              }
+            },
+            "logs": {
+              "logs_collected": {
+                "files": {
+                  "collect_list": [
+                    {
+                      "file_path": "/var/log/docker",
+                      "log_group_name": "/aws/ec2/mysql/docker",
+                      "log_stream_name": "{instance_id}",
+                      "retention_in_days": 7
+                    }
+                  ]
+                }
+              }
+            }
+          }
+          EOF
+          
+          # Start CloudWatch agent
+          sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+          sudo systemctl start amazon-cloudwatch-agent.service
 
-  AuroraReplicaInstance:
-    Type: AWS::RDS::DBInstance
+  # IAM Role for DB EC2 instance
+  DBRole:
+    Type: AWS::IAM::Role
     Properties:
-      Engine: aurora-mysql
-      DBClusterIdentifier: !Ref AuroraDBCluster
-      DBInstanceClass: db.t3.small
-      DBSubnetGroupName: !Ref DBSubnetGroup
-      PubliclyAccessible: false
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+      Path: /
+
+  DBInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref DBRole
 
   # Application Load Balancer
   ApplicationLoadBalancer:
@@ -584,7 +677,7 @@ Resources:
             sudo cat > /var/www/html/api/config.php << EOF
             <?php
             // Database configuration
-            \$db_host = '${AuroraDBCluster.Endpoint.Address}'; 
+            \$db_host = '${MySQLDBInstance.PrivateIp}'; // MySQL container endpoint
             \$db_name = '${DBName}';
             \$db_user = '${DBUsername}';
             \$db_pass = '${DBPassword}';
@@ -594,11 +687,13 @@ Resources:
                 \$conn = new PDO("mysql:host=\$db_host;dbname=\$db_name", \$db_user, \$db_pass);
                 \$conn->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
             } catch(PDOException \$e) {
+                error_log('Database connection failed: ' . \$e->getMessage());
                 echo json_encode(['error' => 'Connection failed: ' . \$e->getMessage()]);
                 exit;
             }
             ?>
             EOF
+
 
             # Set proper permissions
             echo "Setting permissions..."
@@ -609,50 +704,6 @@ Resources:
             # Debug: Show final directory structure
             echo "Final directory structure:"
             sudo find /var/www/html -type f -exec ls -la {} \;
-
-            # Initialize database schema
-            echo "Initializing database..."
-            sudo cat > /tmp/init.sql << EOF
-            -- Create todos table
-            CREATE TABLE IF NOT EXISTS todos (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                task VARCHAR(255) NOT NULL,
-                completed BOOLEAN DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-
-            -- Insert some sample data
-            INSERT INTO todos (task, completed) VALUES 
-            ('Complete AWS infrastructure setup', 0),
-            ('Deploy LAMP stack application', 0),
-            ('Test high availability', 0),
-            ('Configure CloudWatch monitoring', 0);
-            EOF
-
-            # Wait for database to be available and initialize
-            echo "Waiting for database connection..."
-            COUNTER=0
-            MAX_TRIES=3
-            export MYSQL_PWD="${DBPassword}"
-            until mysql -h ${AuroraDBCluster.Endpoint.Address} -u ${DBUsername} -p ${DBPassword} -e "SELECT 1" ${DBName} 2>/dev/null
-            do
-              if [ $COUNTER -eq $MAX_TRIES ]; then
-                echo "Failed to connect to database after $MAX_TRIES attempts"
-                break
-              fi
-              echo "Database connection attempt $COUNTER of $MAX_TRIES..."
-              sleep 10
-              COUNTER=$((COUNTER+1))
-            done
-
-            # Import schema if database is available
-            if mysql -h ${AuroraDBCluster.Endpoint.Address} -u ${DBUsername} -p ${DBPassword} -e "SELECT 1" ${DBName} 2>/dev/null; then
-                echo "Importing database schema..."
-                mysql -h ${AuroraDBCluster.Endpoint.Address} -u ${DBUsername} -p ${DBPassword} ${DBName} < /tmp/init.sql
-                echo "Database initialization complete"
-            else
-                echo "Database connection failed - schema not imported"
-            fi
 
             # Restart services
             echo "Restarting services..."
@@ -821,14 +872,13 @@ Outputs:
     Export:
       Name: !Sub ${EnvironmentName}-WebsiteURL
 
-  DatabaseEndpoint:
-    Description: Endpoint of the Aurora MySQL cluster
-    Value: !GetAtt AuroraDBCluster.Endpoint.Address
-    Export:
-      Name: !Sub ${EnvironmentName}-DatabaseEndpoint
 
   BackupBucketName:
     Description: Name of the S3 bucket for backups
     Value: !Ref BackupBucket
     Export:
       Name: !Sub ${EnvironmentName}-BackupBucket
+
+  MySQLEndpoint:
+    Description: "Private IP address of the MySQL database server"
+    Value: !GetAtt MySQLDBInstance.PrivateIp
