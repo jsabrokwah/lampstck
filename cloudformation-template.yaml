@@ -257,6 +257,120 @@ Resources:
       RouteTableId: !Ref DBRouteTable
       SubnetId: !Ref DBSubnet2
 
+  DBRouteTableInternetRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref DBRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  DBSecurityGroupEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref DBSecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      CidrIp: 0.0.0.0/0
+      Description: "Allow HTTPS outbound for SSM"
+
+  MySQLDBServerInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-03400c3b73b5086e9  # Amazon Linux 2023 AMI for eu-west-1
+      InstanceType: t2.micro  # Adjust based on your database requirements
+      SubnetId: !Ref DBSubnet1  # Placing in eu-west-1a
+      SecurityGroupIds:
+        - !Ref DBSecurityGroup
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref DBInstanceProfile
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 20  # Adjust based on your storage needs
+            VolumeType: gp3
+            DeleteOnTermination: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-MySQL-DB-Server
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          # Update system
+          sudo yum update -y
+
+          # Install Docker
+          sudo dnf install -y docker
+          sudo systemctl start docker
+          sudo systemctl enable docker
+
+          # Install and configure SSM agent
+          sudo yum install -y amazon-ssm-agent
+          sudo systemctl enable amazon-ssm-agent
+          sudo systemctl start amazon-ssm-agent
+
+          # Create Docker volume for MySQL data
+          sudo docker volume create mysql-data
+
+          # Run MySQL container
+          sudo docker run --name mysql-server \
+            -v mysql-data:/var/lib/mysql \
+            -e MYSQL_ROOT_PASSWORD=${DBPassword} \
+            -e MYSQL_DATABASE=${DBName} \
+            -e MYSQL_USER=${DBUsername} \
+            -e MYSQL_PASSWORD=${DBPassword} \
+            -p 3306:3306 \
+            --restart unless-stopped \
+            -d mysql:8.0
+
+          # Install CloudWatch agent
+          sudo yum install -y amazon-cloudwatch-agent
+
+          # Configure CloudWatch agent
+          sudo cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json << 'EOF'
+          {
+            "agent": {
+              "metrics_collection_interval": 60,
+              "run_as_user": "root"
+            },
+            "metrics": {
+              "metrics_collected": {
+                "disk": {
+                  "measurement": ["used_percent"],
+                  "metrics_collection_interval": 60,
+                  "resources": ["/"]
+                },
+                "mem": {
+                  "measurement": ["mem_used_percent"],
+                  "metrics_collection_interval": 60
+                },
+                "swap": {
+                  "measurement": ["swap_used_percent"],
+                  "metrics_collection_interval": 60
+                }
+              }
+            },
+            "logs": {
+              "logs_collected": {
+                "files": {
+                  "collect_list": [
+                    {
+                      "file_path": "/var/log/docker",
+                      "log_group_name": "/aws/ec2/mysql/docker",
+                      "log_stream_name": "{instance_id}",
+                      "retention_in_days": 7
+                    }
+                  ]
+                }
+              }
+            }
+          }
+          EOF
+
+          # Start CloudWatch agent
+          sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+          sudo systemctl start amazon-cloudwatch-agent.service
+
   # Security Groups
   ALBSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -303,117 +417,6 @@ Resources:
           ToPort: 3306
           SourceSecurityGroupId: !Ref WebServerSecurityGroup
 
-
-  MySQLDBInstance:
-    Type: AWS::EC2::Instance
-    Properties:
-      ImageId: ami-03400c3b73b5086e9  # Amazon Linux 2023 AMI for eu-west-1
-      InstanceType: t2.micro  # Adjust based on your database requirements
-      SubnetId: !Ref DBSubnet1  # Placing in eu-west-1a
-      SecurityGroupIds:
-        - !Ref DBSecurityGroup
-      KeyName: !Ref KeyName
-      IamInstanceProfile: !Ref DBInstanceProfile
-      BlockDeviceMappings:
-        - DeviceName: /dev/xvda
-          Ebs:
-            VolumeSize: 20  # Adjust based on your storage needs
-            VolumeType: gp3
-            DeleteOnTermination: false
-      Tags:
-        - Key: Name
-          Value: !Sub ${EnvironmentName}-MySQL-DB-Server
-      UserData:
-        Fn::Base64: !Sub |
-          #!/bin/bash -xe
-          # Update system
-          sudo yum update -y
-          
-          # Install Docker
-          sudo dnf install -y docker
-          sudo systemctl start docker
-          sudo systemctl enable docker
-
-          # Install and configure SSM agent
-            sudo yum install -y amazon-ssm-agent
-            sudo systemctl enable amazon-ssm-agent
-            sudo systemctl start amazon-ssm-agent
-          
-          # Create directories for MySQL data and configuration
-          sudo mkdir -p /data/mysql
-          sudo mkdir -p /data/mysql/conf.d
-          
-          # Create MySQL configuration file
-          sudo cat > /data/mysql/my.cnf << 'EOF'
-          [mysqld]
-          character-set-server = utf8mb4
-          collation-server = utf8mb4_unicode_ci
-          default-authentication-plugin = mysql_native_password
-          max_connections = 20
-          innodb_buffer_pool_size = 256M
-          EOF
-          
-          # Run MySQL container
-          sudo docker run --name mysql-server \
-            -v /data/mysql:/var/lib/mysql \
-            -v /data/mysql/my.cnf:/etc/mysql/my.cnf \
-            -v /data/mysql/conf.d:/etc/mysql/conf.d \
-            -e MYSQL_ROOT_PASSWORD=${DBPassword} \
-            -e MYSQL_DATABASE=${DBName} \
-            -e MYSQL_USER=${DBUsername} \
-            -e MYSQL_PASSWORD=${DBPassword} \
-            -p 3306:3306 \
-            --restart always \
-            -d mysql:8.0
-            
-          # Install CloudWatch agent
-          sudo yum install -y amazon-cloudwatch-agent
-          
-          # Configure CloudWatch agent
-          sudo su <<EOF
-          sudo cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json << 'EOF'
-          {
-            "agent": {
-              "metrics_collection_interval": 60,
-              "run_as_user": "root"
-            },
-            "metrics": {
-              "metrics_collected": {
-                "disk": {
-                  "measurement": ["used_percent"],
-                  "metrics_collection_interval": 60,
-                  "resources": ["/"]
-                },
-                "mem": {
-                  "measurement": ["mem_used_percent"],
-                  "metrics_collection_interval": 60
-                },
-                "swap": {
-                  "measurement": ["swap_used_percent"],
-                  "metrics_collection_interval": 60
-                }
-              }
-            },
-            "logs": {
-              "logs_collected": {
-                "files": {
-                  "collect_list": [
-                    {
-                      "file_path": "/var/log/docker",
-                      "log_group_name": "/aws/ec2/mysql/docker",
-                      "log_stream_name": "{instance_id}",
-                      "retention_in_days": 7
-                    }
-                  ]
-                }
-              }
-            }
-          }
-          EOF
-          
-          # Start CloudWatch agent
-          sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
-          sudo systemctl start amazon-cloudwatch-agent.service
 
   # IAM Role for DB EC2 instance
   DBRole:
@@ -677,7 +680,7 @@ Resources:
             sudo cat > /var/www/html/api/config.php << EOF
             <?php
             // Database configuration
-            \$db_host = '${MySQLDBInstance.PrivateIp}'; // MySQL container endpoint
+            \$db_host = '${MySQLDBServerInstance.PrivateIp}'; // MySQL container endpoint
             \$db_name = '${DBName}';
             \$db_user = '${DBUsername}';
             \$db_pass = '${DBPassword}';
@@ -881,4 +884,16 @@ Outputs:
 
   MySQLEndpoint:
     Description: "Private IP address of the MySQL database server"
-    Value: !GetAtt MySQLDBInstance.PrivateIp
+    Value: !GetAtt MySQLDBServerInstance.PrivateIp
+  
+  MySQLDBName:
+    Description: "Name of the MySQL database"
+    Value: !Ref DBName
+  
+  MySQLUsername:
+    Description: "Username for the MySQL database"
+    Value: !Ref DBUsername
+  
+  MySQLPassword:
+    Description: "Password for the MySQL database"
+    Value: !Ref DBPassword
