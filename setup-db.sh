@@ -12,12 +12,37 @@ sudo yum install -y amazon-ssm-agent
 sudo systemctl enable amazon-ssm-agent
 sudo systemctl start amazon-ssm-agent
 
-# Create Docker volume for MySQL data
-sudo docker volume create mysql-data
+# Wait for the EBS volume to be attached and format/mount it
+EBS_DEVICE="/dev/xvdf"
+MOUNT_POINT="/data/mysql"
 
-# Run MySQL container
+# Wait for the device to be available
+while [ ! -e $EBS_DEVICE ]; do
+  echo "Waiting for EBS volume to be attached..."
+  sleep 5
+done
+
+# Create mount point
+sudo mkdir -p $MOUNT_POINT
+
+# Check if the volume is already formatted
+if sudo file -s $EBS_DEVICE | grep -q "/dev/xvdf: data"; then
+  # Format the volume if it's not already formatted
+  sudo mkfs -t ext4 $EBS_DEVICE
+fi
+
+# Mount the volume
+sudo mount $EBS_DEVICE $MOUNT_POINT
+
+# Add to fstab for persistent mounting
+echo "$EBS_DEVICE $MOUNT_POINT ext4 defaults,nofail 0 2" | sudo tee -a /etc/fstab
+
+# Set proper ownership for Docker MySQL
+sudo chown -R 999:999 $MOUNT_POINT
+
+# Run MySQL container with bind mount to EBS-backed directory
 sudo docker run --name mysql-server \
-  -v mysql-data:/var/lib/mysql \
+  -v /data/mysql:/var/lib/mysql \
   -e MYSQL_ROOT_PASSWORD=${DBPassword} \
   -e MYSQL_DATABASE=${DBName} \
   -e MYSQL_USER=${DBUsername} \
