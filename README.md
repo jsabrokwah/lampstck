@@ -18,37 +18,8 @@ A simple Todo application designed to be deployed on a highly available LAMP sta
 
 - **Frontend**: HTML, CSS, JavaScript
 - **Backend**: PHP
-- **Database**: Aurora MySQL in AWS
-- **Infrastructure**: AWS CloudFormation for automated deployment
-
-## Deployment Instructions
-
-### Database Setup
-
-1. Connect to your MySQL database:
-   ```
-   mysql -u root -p
-   ```
-
-2. Run the setup script:
-   ```
-   mysql -u root -p < setup.sql
-   ```
-
-### Application Deployment
-
-1. Deploy the application files to your web server document root:
-   ```
-   cp -r * /var/www/html/
-   ```
-
-2. Update the database configuration in `api/config.php` with your Aurora MySQL endpoint and credentials.
-
-3. Set proper permissions:
-   ```
-   chmod -R 755 /var/www/html/
-   chown -R apache:apache /var/www/html/
-   ```
+- **Database**: Containerized MySQL on EC2 with EBS storage
+- **Infrastructure**: AWS CloudFormation for automated infrastructure provisioning and stack deployment
 
 ## AWS Infrastructure Integration
 
@@ -56,7 +27,7 @@ This application is designed to work with the following AWS infrastructure compo
 
 - **Load Balancing**: Application Load Balancer distributes traffic across multiple EC2 instances
 - **Auto Scaling**: EC2 instances in private subnets with Auto Scaling Groups for elasticity
-- **Database**: Aurora MySQL in isolated subnets with primary and replica instances for high availability
+- **Database**: Containerized MySQL on dedicated EC2 instance in isolated subnet with EBS-backed persistent storage
 - **Security**: Network ACLs, Security Groups, and IAM roles for defense in depth
 - **Monitoring**: CloudWatch for performance metrics and operational visibility
 
@@ -78,6 +49,6 @@ The application includes CloudWatch integration for:
 - Custom dashboard for operational visibility
 - Automated scaling based on demand
 
-## Automated Deployment
+## Deployment Instructions
 
-Use the included CloudFormation template (`cloudformation-template.yaml`) for fully automated infrastructure deployment. See `deployment-instructions.md` for detailed steps.
+Use the included CloudFormation template (`cloudformation-template.yaml`) for fully automated infrastructure deployment. See [implementation-journey.md](implementation-journey.md) for detailed steps.

@@ -1,4 +1,4 @@
-# Deployment Instructions for Todo App Infrastructure
+# Project Implementation and Deployment Instructions for Lamp Stack (Todo App) Infrastructure
 
 This document provides comprehensive step-by-step instructions for deploying the Todo application infrastructure using AWS CloudFormation, ensuring high availability, security, and adherence to AWS Well-Architected Framework principles.
 
@@ -6,7 +6,8 @@ This document provides comprehensive step-by-step instructions for deploying the
 
 1. AWS CLI installed and configured with appropriate credentials
 2. An EC2 key pair for SSH access to instances
-3. Basic understanding of AWS services (EC2, VPC, RDS, CloudFormation)
+3. Basic understanding of AWS services (EC2, VPC, Elastic Load Balancer, Security Group, CloudFormation, CloudWatch, IAM Roles), Docker, SQL Database, PHP, HTML, CSS, Javascript, and Apache
+4. A git repository with this entire project files pushed into it's main branch
 
 ## Step 1: Prepare for Deployment
 
@@ -18,24 +19,30 @@ Before deploying the infrastructure:
    - EC2 instances in private subnets with Auto Scaling
    - Containerized MySQL database on EC2 in isolated subnet
    - Security groups, IAM roles, and CloudWatch monitoring
+   - Review the User Data UserData in the `WebServerLaunchTemplate` and `MySQLDBInstance` blocks to understand the scripts and commands that get executed when an instance is launched
 
-2. Update the repository URL in the CloudFormation template if you're hosting the code in your own repository:
+2. Update the git repository URL in the CloudFormation template if you're hosting the code in your own git repository:
    - Locate the `UserData` section in the `WebServerLaunchTemplate` resource
    - Replace the GitHub repository URL with your own if needed
 
 ## Step 2: Deploy the CloudFormation Stack
 
-1. Create an S3 bucket for the CloudFormation template (optional for large templates):
+1. Validate the cloudformation-template.yaml to review how the infrastructure will be provisioned. You'd also see any error should any occur
+   ```bash
+   aws cloudformation validate-template --template-body file://cloudformation-template.yaml
+   ```
+
+2. Create an S3 bucket for the CloudFormation template (optional if you'd like to deploy from S3 bucket):
    ```bash
    aws s3 mb s3://your-cloudformation-bucket
    aws s3 cp cloudformation-template.yaml s3://your-cloudformation-bucket/
    ```
 
-2. Deploy the CloudFormation stack:
+3. Deploy the CloudFormation stack (from your local machine):
    ```bash
    aws cloudformation create-stack \
      --stack-name todo-app-stack \
-     --template-body cloudformation-template.yaml \
+     --template-body file://cloudformation-template.yaml \
      --parameters \
        ParameterKey=KeyName,ParameterValue=your-key-pair-name \
        ParameterKey=DBPassword,ParameterValue=your-secure-password \
@@ -64,7 +71,7 @@ Before deploying the infrastructure:
 
 The CloudFormation template includes user data scripts that automatically initialize the database. To verify:
 
-1. Get the MySQL database endpoint:
+1. Get the MySQL database endpoint (private IP):
    ```bash
    aws cloudformation describe-stacks \
      --stack-name todo-app-stack \
@@ -72,21 +79,25 @@ The CloudFormation template includes user data scripts that automatically initia
      --output text
    ```
 
-2. Connect to one of the EC2 instances using AWS Systems Manager Session Manager:
+2. Connect to the MySQL database EC2 instance using AWS Systems Manager Session Manager:
    ```bash
-   # Get an instance ID from the Auto Scaling Group
+   # Get the MySQL database instance ID
    aws ec2 describe-instances \
-     --filters "Name=tag:aws:autoscaling:groupName,Values=todo-app-ASG" \
+     --filters "Name=tag:Name,Values=todo-app-MySQL-DB-Server" \
      --query "Reservations[0].Instances[0].InstanceId" \
      --output text
    
-   # Connect using Session Manager (more secure than SSH)
-   aws ssm start-session --target <instance-id>
+   # Connect using Session Manager
+   aws ssm start-session --target <mysql-instance-id>
    ```
 
-3. Verify the database tables were created:
+3. Verify the MySQL container and database tables:
    ```bash
-   mysql -h <mysql-endpoint> -u admin -p -e "USE todo_app; SHOW TABLES;"
+   # Check if MySQL container is running
+   sudo docker ps | grep mysql-server
+   
+   # Connect to MySQL container and verify tables
+   sudo docker exec -it mysql-server mysql -u admin -p -e "USE todo_app; SHOW TABLES;"
    ```
 
 ## Step 4: Access and Test the Application
@@ -137,9 +148,10 @@ The deployment includes built-in monitoring through CloudWatch:
 1. Access the CloudWatch dashboard:
    ```bash
    # Dashboard is available in AWS Console under CloudWatch > Dashboards
-   # Dashboard name: <EnvironmentName>-Dashboard (e.g., lamp-stack-ha-Dashboard)
-   aws cloudwatch get-dashboard --dashboard-name lamp-stack-ha-Dashboard
+   # Dashboard name: <EnvironmentName>-Dashboard (e.g., todo-app-Dashboard)
+   aws cloudwatch get-dashboard --dashboard-name todo-app-Dashboard
    ```
+   You can equally access the dashboard through the management console for visualized dashboard
 
 2. Key metrics being monitored:
    - EC2 CPU utilization (triggers auto-scaling)
@@ -169,10 +181,15 @@ If you encounter issues with the deployment:
    sudo cat /var/log/httpd/error_log
    ```
 
-3. Use the included `fix-lamp-stack.sh` script to repair common configuration issues:
-   ```bash
-   ./fix-lamp-stack.sh
-   ```
+3. If Add todo action from the frontend fails:
+   i) ssm into any of the todo-app-WebServer instances
+   ii) Run the following commands:
+      ```bash
+         cd /var/www/html
+         # Verify the database can be connected from the WebServer Instance
+         sudo mysql -h <MySQLEndpoint> -u <MySQLUsername> -D <MySQLDBName> -p<MySQLPassword>  #Get the parameters from the Outputs tab cloudformation dashboard
+         # If the connection can be established, exit the mysql session, then run the command below to recreate the tables:
+         sudo mysql -h <MySQLEndpoint> -u <MySQLUsername> -D <MySQLDBName> -p<MySQLPassword> < setup.sql
 
 ## Security and Performance Testing
 
@@ -180,8 +197,11 @@ If you encounter issues with the deployment:
 
 1. **Network Security Validation**:
    ```bash
-   # Test that database is not accessible from public internet
-   nmap -p 3306 <mysql-ec2-public-ip>  # Should show filtered/closed
+   # Test that containerized MySQL is not accessible from public internet
+   nmap -p 3306 <mysql-ec2-private-ip>  # Should show filtered/closed from external
+   
+   # Verify MySQL container security
+   sudo docker exec mysql-server netstat -tlnp | grep 3306  # Should only bind to container
    
    # Verify web servers are only accessible through ALB
    nmap -p 80,443 <web-server-private-ip>  # Should timeout from external
