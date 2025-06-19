@@ -5,7 +5,7 @@ Parameters:
   EnvironmentName:
     Description: Environment name prefix for resources
     Type: String
-    Default: lamp-stack-ha
+    Default: todo-app
 
   VpcCIDR:
     Description: CIDR block for the VPC
@@ -286,7 +286,7 @@ Resources:
         - Key: Name
           Value: !Sub ${EnvironmentName}-MySQL-Data-Volume
 
-  MySQLDBServerInstance:
+  MySQLDBInstance:
     Type: AWS::EC2::Instance
     Properties:
       ImageId: ami-03400c3b73b5086e9  # Amazon Linux 2023 AMI for eu-west-1
@@ -413,7 +413,7 @@ Resources:
     Type: AWS::EC2::VolumeAttachment
     Properties:
       Device: /dev/xvdf  # This will be the device name in the instance
-      InstanceId: !Ref MySQLDBServerInstance
+      InstanceId: !Ref MySQLDBInstance
       VolumeId: !Ref MySQLDataVolume
   # Security Groups
   ALBSecurityGroup:
@@ -546,10 +546,10 @@ Resources:
       Roles:
         - !Ref WebServerRole
 
-  WebServerLaunchTemplate:
+  WebServerLaunchTemplateV2:
     Type: AWS::EC2::LaunchTemplate
     Properties:
-      LaunchTemplateName: !Sub ${EnvironmentName}-WebServerLaunchTemplate
+      LaunchTemplateName: !Sub ${EnvironmentName}-WebServerLaunchTemplateV2
       VersionDescription: Initial version
       LaunchTemplateData:
         ImageId: ami-03400c3b73b5086e9  # Amazon Linux 2023 AMI for eu-west-1
@@ -724,7 +724,7 @@ Resources:
             sudo cat > /var/www/html/api/config.php << EOF
             <?php
             // Database configuration
-            \$db_host = '${MySQLDBServerInstance.PrivateIp}'; // MySQL container endpoint
+            \$db_host = '${MySQLDBInstance.PrivateIp}'; // MySQL container endpoint
             \$db_name = '${DBName}';
             \$db_user = '${DBUsername}';
             \$db_pass = '${DBPassword}';
@@ -753,7 +753,7 @@ Resources:
             sudo find /var/www/html -type f -exec ls -la {} \;
 
             sudo cd /var/www/html
-            sudo mysql -h ${MySQLDBServerInstance.PrivateIp} -u ${DBUsername} -D ${DBName} -p${DBPassword} < setup.sql
+            sudo mysql -h ${MySQLDBInstance.PrivateIp} -u ${DBUsername} -D ${DBName} -p${DBPassword} < setup.sql
 
             # Restart services
             echo "Restarting services..."
@@ -768,8 +768,8 @@ Resources:
     Properties:
       AutoScalingGroupName: !Sub ${EnvironmentName}-ASG
       LaunchTemplate:
-        LaunchTemplateId: !Ref WebServerLaunchTemplate
-        Version: !GetAtt WebServerLaunchTemplate.LatestVersionNumber
+        LaunchTemplateId: !Ref WebServerLaunchTemplateV2
+        Version: !GetAtt WebServerLaunchTemplateV2.LatestVersionNumber
       MinSize: 2
       MaxSize: 6
       DesiredCapacity: 2
@@ -931,7 +931,7 @@ Outputs:
 
   MySQLEndpoint:
     Description: "Private IP address of the MySQL database server"
-    Value: !GetAtt MySQLDBServerInstance.PrivateIp
+    Value: !GetAtt MySQLDBInstance.PrivateIp
   
   MySQLDBName:
     Description: "Name of the MySQL database"

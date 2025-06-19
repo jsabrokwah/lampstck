@@ -16,7 +16,7 @@ Before deploying the infrastructure:
    - VPC with public, private, and isolated subnets across two Availability Zones
    - Application Load Balancer in public subnets
    - EC2 instances in private subnets with Auto Scaling
-   - Aurora MySQL database in isolated subnets
+   - Containerized MySQL database on EC2 in isolated subnet
    - Security groups, IAM roles, and CloudWatch monitoring
 
 2. Update the repository URL in the CloudFormation template if you're hosting the code in your own repository:
@@ -64,11 +64,11 @@ Before deploying the infrastructure:
 
 The CloudFormation template includes user data scripts that automatically initialize the database. To verify:
 
-1. Get the database endpoint:
+1. Get the MySQL database endpoint:
    ```bash
    aws cloudformation describe-stacks \
      --stack-name todo-app-stack \
-     --query "Stacks[0].Outputs[?OutputKey=='DatabaseEndpoint'].OutputValue" \
+     --query "Stacks[0].Outputs[?OutputKey=='MySQLEndpoint'].OutputValue" \
      --output text
    ```
 
@@ -86,7 +86,7 @@ The CloudFormation template includes user data scripts that automatically initia
 
 3. Verify the database tables were created:
    ```bash
-   mysql -h <database-endpoint> -u admin -p -e "USE todo_app; SHOW TABLES;"
+   mysql -h <mysql-endpoint> -u admin -p -e "USE todo_app; SHOW TABLES;"
    ```
 
 ## Step 4: Access and Test the Application
@@ -136,10 +136,9 @@ The deployment includes built-in monitoring through CloudWatch:
 
 1. Access the CloudWatch dashboard:
    ```bash
-   aws cloudformation describe-stacks \
-     --stack-name todo-app-stack \
-     --query "Stacks[0].Outputs[?OutputKey=='WebAppDashboard'].OutputValue" \
-     --output text
+   # Dashboard is available in AWS Console under CloudWatch > Dashboards
+   # Dashboard name: <EnvironmentName>-Dashboard (e.g., lamp-stack-ha-Dashboard)
+   aws cloudwatch get-dashboard --dashboard-name lamp-stack-ha-Dashboard
    ```
 
 2. Key metrics being monitored:
@@ -175,6 +174,55 @@ If you encounter issues with the deployment:
    ./fix-lamp-stack.sh
    ```
 
+## Security and Performance Testing
+
+### Security Testing
+
+1. **Network Security Validation**:
+   ```bash
+   # Test that database is not accessible from public internet
+   nmap -p 3306 <mysql-ec2-public-ip>  # Should show filtered/closed
+   
+   # Verify web servers are only accessible through ALB
+   nmap -p 80,443 <web-server-private-ip>  # Should timeout from external
+   ```
+
+2. **Application Security Testing**:
+   ```bash
+   # Test SQL injection protection
+   curl -X POST "http://<alb-dns>/api/add_todo.php" \
+     -d "task='; DROP TABLE todos; --"
+   
+   # Verify input sanitization
+   curl -X POST "http://<alb-dns>/api/add_todo.php" \
+     -d "task=<script>alert('xss')</script>"
+   ```
+
+### Performance Testing
+
+1. **Load Testing with Apache Bench**:
+   ```bash
+   # Install Apache Bench
+   sudo yum install -y httpd-tools
+   
+   # Test concurrent requests
+   ab -n 1000 -c 10 http://<alb-dns>/
+   
+   # Test API endpoints
+   ab -n 500 -c 5 -p post_data.txt -T application/x-www-form-urlencoded \
+     http://<alb-dns>/api/get_todos.php
+   ```
+
+2. **Monitor Auto Scaling**:
+   ```bash
+   # Generate load to trigger scaling
+   ab -n 10000 -c 50 http://<alb-dns>/
+   
+   # Watch scaling events
+   aws autoscaling describe-scaling-activities \
+     --auto-scaling-group-name <asg-name>
+   ```
+
 ## Cleanup
 
 To delete the entire infrastructure when no longer needed:
@@ -183,4 +231,4 @@ To delete the entire infrastructure when no longer needed:
 aws cloudformation delete-stack --stack-name todo-app-stack
 ```
 
-This will delete all resources created by the CloudFormation stack, including the VPC, EC2 instances, load balancer, and Aurora database cluster.
+This will delete all resources created by the CloudFormation stack, including the VPC, EC2 instances, load balancer, and containerized MySQL database.

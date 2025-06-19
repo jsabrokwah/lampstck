@@ -2,11 +2,6 @@
 CREATE DATABASE IF NOT EXISTS todo_app;
 USE todo_app;
 
--- Create user and grant privileges
-CREATE USER IF NOT EXISTS 'todo_user'@'localhost' IDENTIFIED BY 'todo_password';
-GRANT ALL PRIVILEGES ON todo_app.* TO 'todo_user'@'localhost';
-FLUSH PRIVILEGES;
-
 -- Create todos table
 CREATE TABLE IF NOT EXISTS todos (
     id INT AUTO_INCREMENT PRIMARY KEY,

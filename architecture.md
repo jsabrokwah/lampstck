@@ -11,7 +11,7 @@ This document details the infrastructure architecture for a highly available, se
 │  ┌─────────────────────────────────┐     ┌───────▼────────┐     ┌─────────────────────┐  │
 │  │      Public Subnet (AZ-A)       │     │ Application    │     │ Public Subnet (AZ-B)│  │
 │  │                                 │     │ Load Balancer  │     │                     │  │
-│  │                                 │     │ with WAF       │     │                     │  │
+│  │                                 │     │                │     │                     │  │
 │  └─────────────┬───────────────────┘     └───────┬────────┘     └┬────────────────────┘  │
 │                │                                 │               │                       │
 │                ▼                                 │               ▼                       │
@@ -26,20 +26,20 @@ This document details the infrastructure architecture for a highly available, se
 │  │        │            │                         │ │        │            │               │
 │  └────────┼────────────┘                         │ └────────┼────────────┘               │ 
 │           │                                      │          │                            │
-│           ▼                                      │          ▼                            │
-│  ┌────────────────────┐                          │ ┌────────────────────┐                │
-│  │ Isolated Subnet    │                          │ │ Isolated Subnet    │                │
-│  │ (AZ-A)             │                          │ │ (AZ-B)             │                │
-│  │                    │                          │ │                    │                │
-│  │  ┌────────────┐    │                          │ │  ┌────────────┐    │                │
-│  │  │ Aurora     │◄─────────────────────────────────┤ │ Aurora     │    │                │
-│  │  │ MySQL      │    │                          │ │  │ MySQL      │    │                │
-│  │  │ Primary    │    │                          │ │  │ Replica    │    │                │
-│  │  └────────────┘    │                          │ │  └────────────┘    │                │
-│  └────────────────────┘                          │ └────────────────────┘                │
-│                                                  │                                       │
-└──────────────────────────────────────────────────┼──────────────────────────────────────-┘
-                                                   │
+│           ▼                                      │          │                            │
+│  ┌────────────────────┐                          │ │                                     │
+│  │ Isolated Subnet    │                          │ │                                     │
+│  │ (AZ-A)             │                          │ │                                     │
+│  │                    │                          │ │                                     │
+│  │  ┌────────────┐    │                          │ │                                     │
+│  │  │ MySQL      │◄──────────────────────────────┘ │                                     │
+│  │  │ Container  │    │                            │                                     │
+│  │  │ on EC2     │    │                            │                                     │
+│  │  └────────────┘    │                            │                                     │
+│  └────────────────────┘                            │                                     │
+│                                                    │                                     │
+└────────────────────────────────────────────────────┼─────────────────────────────────────┘
+                                                     │
                       ┌────────────────────────────┴───────────┐
                       │                                        │
               ┌────────▼────────┐                      ┌────────▼────────┐
@@ -92,12 +92,12 @@ This architecture addresses the five pillars of the AWS Well-Architected Framewo
   - Configured with CloudWatch agent for detailed monitoring
 
 ### 4. Database Layer
-- **Amazon Aurora MySQL**:
-  - Provides high availability with automatic failover to replica instances
-  - Deployed across multiple AZs for disaster recovery
-  - Offers automated backups with 35-day retention period
-  - Enables point-in-time recovery for data protection
-  - Uses isolated subnets for maximum security
+- **Containerized MySQL on EC2**:
+  - Deployed in an isolated subnet in AZ-A for enhanced security
+  - Uses Docker container for easy management and portability
+  - Utilizes dedicated EBS volume for data persistence
+  - Configured with CloudWatch monitoring for performance metrics
+  - Secured with appropriate security groups limiting access
 
 ### 5. Security Implementation
 - **Defense in Depth**:

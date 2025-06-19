@@ -8,11 +8,11 @@ if (!isset($_POST['task']) || empty($_POST['task'])) {
     exit;
 }
 
-$task = htmlspecialchars($_POST['task']);
+$task = trim($_POST['task']);
 
 try {
     $stmt = $conn->prepare("INSERT INTO todos (task, completed) VALUES (:task, 0)");
-    $stmt->bindParam(':task', $task);
+    $stmt->bindParam(':task', $task, PDO::PARAM_STR);
     $stmt->execute();
     
     $id = $conn->lastInsertId();
